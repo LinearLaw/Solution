@@ -5,14 +5,8 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Scanner;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
@@ -28,31 +22,45 @@ public class FrequencyApplication {
 
     public static String FILE_PATH = "/Attention_Is_All_You_Need_In_Search_of_an_Understandable_Consensus_Algorithm.txt";
 
-    public static ConcurrentHashMap<String, AtomicInteger> map = new ConcurrentHashMap<>();
+    public static ConcurrentHashMap<String, AtomicInteger> wordMap = new ConcurrentHashMap<>();
 
     public static ExecutorService executorService = Executors.newFixedThreadPool(3);
 
-    public static void main(String[] args) throws URISyntaxException, InterruptedException {
+    public static void main(String[] args) {
+        try {
+            calc();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static void calc() throws URISyntaxException, InterruptedException {
         URL resource = FrequencyApplication.class.getResource(FILE_PATH);
         Path path = Paths.get(resource.toURI());
         // 目标是 target
         Path parent = path.getParent();
 
-        // 拆分文本
+        // 1、拆分文本，分片
         List<File> files = splitChunk(
                 resource.getPath(),
                 parent.toString(),
                 10240);
 
-        // 词频统计
-        makeStatistic(files);
+        // 2、每一个分片进行词频统计
+        try {
+            makeStatistic(files);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
 
-        // 汇总计算
-        totalStatistic();
+        // 3、汇总计算
+        List<Map.Entry<String, AtomicInteger>> res = totalStatistic();
+        for (Map.Entry<String, AtomicInteger> re : res) {
+            System.out.println(re);
+        }
 
         executorService.shutdown();
-        boolean b = executorService.awaitTermination(600, TimeUnit.SECONDS);
-        System.out.println(b);
+        executorService.awaitTermination(600, TimeUnit.SECONDS);
     }
 
     private static List<File> splitChunk(String filePath, String chunkPath, long chunkSize) {
@@ -66,9 +74,9 @@ public class FrequencyApplication {
             while ((charsRead = reader.read(buffer)) != -1) {
                 File chunkFile = new File(chunkPath, "chunk_" + fileCount + ".txt");
                 fileCount++;
-                try(BufferedWriter writer = new BufferedWriter(
+                try (BufferedWriter writer = new BufferedWriter(
                         new FileWriter(chunkFile))
-                ){
+                ) {
                     writer.write(buffer, 0, charsRead);
                 }
                 chunks.add(chunkFile);
@@ -80,21 +88,53 @@ public class FrequencyApplication {
         return chunks;
     }
 
-    private static void makeStatistic(List<File> chunks){
+    private static void makeStatistic(List<File> chunks) throws InterruptedException {
+        CountDownLatch countDownLatch = new CountDownLatch(chunks.size());
+
         for (File chunk : chunks) {
-            executorService.submit(()->{
+            executorService.submit(() -> {
                 HashMap<String, Integer> local = new HashMap<>();
 
-                try(Scanner scanner = new Scanner(chunk)){
+                try (Scanner scanner = new Scanner(chunk)) {
                     scanner.useDelimiter("[^a-zA-Z0-9]+");
-                }catch(Exception e){
+
+                    while (scanner.hasNext()) {
+                        String word = scanner.next().toLowerCase();
+                        local.put(word, local.getOrDefault(word, 0) + 1);
+                    }
+                } catch (Exception e) {
                     e.printStackTrace();
                 }
+
+                // 直接合并到全局map
+                local.forEach((word, count) -> {
+                    wordMap.computeIfAbsent(
+                            word,
+                            k -> new AtomicInteger(0)
+                    ).addAndGet(count);
+                });
+
+                countDownLatch.countDown();
             });
         }
+
+        countDownLatch.await();
     }
 
-    private static void totalStatistic(){
+    private static List<Map.Entry<String, AtomicInteger>> totalStatistic() {
+        PriorityQueue<Map.Entry<String, AtomicInteger>> queue = new PriorityQueue<>(
+                Comparator.comparingInt(a -> a.getValue().get())
+        );
 
+        wordMap.entrySet().forEach(entry -> {
+            queue.add(entry);
+            // 数量超出100，弹出堆顶
+            if (queue.size() > 100) {
+                queue.poll();
+            }
+        });
+
+        List<Map.Entry<String, AtomicInteger>> list = new ArrayList<>(queue);
+        return list;
     }
 }
